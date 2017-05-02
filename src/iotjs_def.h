@@ -19,7 +19,7 @@
 
 
 #ifndef IOTJS_MAX_READ_BUFFER_SIZE
-#ifdef __NUTTX__
+#if defined(__NUTTX__) || defined(__TIZENRT__)
 #define IOTJS_MAX_READ_BUFFER_SIZE 1023
 #define IOTJS_MAX_PATH_SIZE 120
 #else
@@ -38,7 +38,7 @@
 #endif
 
 
-#if defined(__ARM__)
+#if defined(__arm__)
 #define TARGET_ARCH "arm"
 #elif defined(__i686__)
 #define TARGET_ARCH "ia32"
@@ -49,12 +49,14 @@
 #endif
 
 
-#if defined(__LINUX__)
+#if defined(__linux__)
 #define TARGET_OS "linux"
 #elif defined(__NUTTX__)
 #define TARGET_OS "nuttx"
-#elif defined(__DARWIN__)
+#elif defined(__APPLE__)
 #define TARGET_OS "darwin"
+#elif defined(__TIZENRT__)
+#define TARGET_OS "tizenrt"
 #else
 #define TARGET_OS "unknown"
 #endif
@@ -79,6 +81,9 @@
 #define IOTJS_DECLARE_THIS(iotjs_classname_t, x) \
   iotjs_classname_t##_impl_t* _this = &(x)->unsafe;
 
+/* Avoid compiler warnings if needed. */
+#define IOTJS_UNUSED(x) ((void)(x))
+
 
 #ifdef NDEBUG
 
@@ -97,7 +102,10 @@
 #define IOTJS_VALIDATED_STRUCT_METHOD(iotjs_classname_t, x) \
   IOTJS_DECLARE_THIS(iotjs_classname_t, x);
 
-#else
+#define IOTJS_VALIDATABLE_STRUCT_DESTRUCTOR_VALIDATE(iotjs_classname_t, x)
+#define IOTJS_VALIDATABLE_STRUCT_METHOD_VALIDATE(iotjs_classname_t, x)
+
+#else /* !NDEBUG */
 
 #define IOTJS_VALIDATED_STRUCT(iotjs_classname_t) \
   iotjs_classname_t##_impl_t;                     \
@@ -132,7 +140,15 @@
   IOTJS_DECLARE_THIS(iotjs_classname_t, x);                 \
   IOTJS_VALIDATE_FLAG(iotjs_classname_t, x);
 
-#endif
+#define IOTJS_VALIDATABLE_STRUCT_DESTRUCTOR_VALIDATE(iotjs_classname_t, x) \
+  IOTJS_VALIDATE_FLAG(iotjs_classname_t, x);                               \
+  (x)->flag_create = IOTJS_INVALID_MAGIC_SEQUENCE;                         \
+  iotjs_buffer_release((x)->valgrind_tracer);
+
+#define IOTJS_VALIDATABLE_STRUCT_METHOD_VALIDATE(iotjs_classname_t, x) \
+  IOTJS_VALIDATE_FLAG(iotjs_classname_t, x);
+
+#endif /* NDEBUG */
 
 #include <uv.h>
 #include <assert.h>
@@ -145,6 +161,7 @@
 #include "iotjs_binding_helper.h"
 #include "iotjs_debuglog.h"
 #include "iotjs_env.h"
+#include "iotjs_magic_strings.h"
 #include "iotjs_module.h"
 #include "iotjs_string.h"
 #include "iotjs_util.h"

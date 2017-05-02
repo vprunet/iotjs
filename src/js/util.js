@@ -33,6 +33,9 @@ function isNumber(arg) {
   return typeof arg === 'number';
 }
 
+function isFinite(arg) {
+  return (arg == 0) || (arg != arg / 2);
+}
 
 function isBoolean(arg) {
   return typeof arg === 'boolean';
@@ -92,13 +95,18 @@ function format(s) {
     switch (m) {
       case '%s': return String(args[i++]);
       case '%d': return Number(args[i++]);
-      case '%j': return '[JSON object]';
+      case '%j':
+        try {
+          return JSON.stringify(args[i++]);
+        } catch (_) {
+          return '[Circular]';
+        }
       default: return m;
     }
   });
 
   while (i < args.length) {
-      str += ' ' + args[i++].toString();
+    str += ' ' + formatValue(args[i++]);
   }
 
   return str;
@@ -160,6 +168,7 @@ exports.isNumber = isNumber;
 exports.isBoolean = isBoolean;
 exports.isString = isString;
 exports.isObject = isObject;
+exports.isFinite = isFinite;
 exports.isFunction = isFunction;
 exports.isBuffer = isBuffer;
 exports.isArray = Array.isArray;

@@ -115,7 +115,7 @@ Readable.prototype.resume = function() {
 
 
 Readable.prototype.error = function(error) {
-  emitError(this, error);
+  this.emit('error', error);
 };
 
 
@@ -125,11 +125,11 @@ Readable.prototype.push = function(chunk, encoding) {
   if (!util.isString(chunk) &&
       !util.isBuffer(chunk) &&
       !util.isNull(chunk)) {
-    emitError(this, TypeError('Invalid chunk'));
+    this.error(TypeError('Invalid chunk'));
   } else if (util.isNull(chunk)) {
     onEof(this);
   } else if (state.ended) {
-    emitError(this, Error('stream.push() after EOF'));
+    this.error(Error('stream.push() after EOF'));
   } else {
     if (util.isString(chunk)) {
       encoding = encoding || state.defaultEncoding;
@@ -140,7 +140,7 @@ Readable.prototype.push = function(chunk, encoding) {
     } else {
       state.length += chunk.length;
       state.buffer.push(chunk);
-      emitReadable(this);
+      this.emit('readable');
     }
   }
 };
@@ -181,11 +181,6 @@ function emitEnd(stream) {
 };
 
 
-function emitReadable(stream) {
-  stream.emit('readable');
-};
-
-
 function emitData(stream, data) {
   var state = stream._readableState;
 
@@ -195,11 +190,6 @@ function emitData(stream, data) {
   if (state.ended && state.length == 0) {
     emitEnd(stream);
   }
-};
-
-
-function emitError(stream, er) {
-  stream.emit('error', er);
 };
 
 

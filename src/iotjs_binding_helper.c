@@ -24,25 +24,31 @@ void iotjs_uncaught_exception(const iotjs_jval_t* jexception) {
   const iotjs_jval_t* process = iotjs_module_get(MODULE_PROCESS);
 
   iotjs_jval_t jonuncaughtexception =
-      iotjs_jval_get_property(process, "_onUncaughtExcecption");
+      iotjs_jval_get_property(process, IOTJS_MAGIC_STRING__ONUNCAUGHTEXCEPTION);
   IOTJS_ASSERT(iotjs_jval_is_function(&jonuncaughtexception));
 
   iotjs_jargs_t args = iotjs_jargs_create(1);
   iotjs_jargs_append_jval(&args, jexception);
 
+  bool throws;
   iotjs_jval_t jres =
-      iotjs_jhelper_call_ok(&jonuncaughtexception, process, &args);
-  iotjs_jval_destroy(&jres);
+      iotjs_jhelper_call(&jonuncaughtexception, process, &args, &throws);
 
   iotjs_jargs_destroy(&args);
+  iotjs_jval_destroy(&jres);
   iotjs_jval_destroy(&jonuncaughtexception);
+
+  if (throws) {
+    exit(2);
+  }
 }
 
 
 void iotjs_process_emit_exit(int code) {
   const iotjs_jval_t* process = iotjs_module_get(MODULE_PROCESS);
 
-  iotjs_jval_t jexit = iotjs_jval_get_property(process, "emitExit");
+  iotjs_jval_t jexit =
+      iotjs_jval_get_property(process, IOTJS_MAGIC_STRING_EMITEXIT);
   IOTJS_ASSERT(iotjs_jval_is_function(&jexit));
 
   iotjs_jargs_t jargs = iotjs_jargs_create(1);
@@ -65,7 +71,8 @@ void iotjs_process_emit_exit(int code) {
 bool iotjs_process_next_tick() {
   const iotjs_jval_t* process = iotjs_module_get(MODULE_PROCESS);
 
-  iotjs_jval_t jon_next_tick = iotjs_jval_get_property(process, "_onNextTick");
+  iotjs_jval_t jon_next_tick =
+      iotjs_jval_get_property(process, IOTJS_MAGIC_STRING__ONNEXTTICK);
   IOTJS_ASSERT(iotjs_jval_is_function(&jon_next_tick));
 
   iotjs_jval_t jres =

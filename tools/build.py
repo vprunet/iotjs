@@ -28,6 +28,7 @@ import re
 import os
 
 from js2c import js2c
+from module_analyzer import resolve_modules, analyze_module_dependency
 from common_py import path
 from common_py.system.filesystem import FileSystem as fs
 from common_py.system.executor import Executor as ex
@@ -36,19 +37,17 @@ from common_py.system.platform import Platform
 platform = Platform()
 
 
-# Initialize build option.
-def init_option():
-    # Check config option.
+# Initialize build options.
+def init_options():
+    # Check config options.
     arg_config = list(filter(lambda x: x.startswith('--config='), sys.argv))
-
     config_path = path.BUILD_CONFIG_PATH
 
-    if len(arg_config) != 0:
+    if arg_config:
         config_path = arg_config[-1].split('=', 1)[1]
 
     # Read config file and apply it to argv.
     argv = []
-    config = {}
     with open(config_path, 'rb') as f:
         config = json.loads(f.read().decode('ascii'))
         config_option = config['build_option']
@@ -66,215 +65,206 @@ def init_option():
                     argv.append('--%s=%s' % (opt_key, val))
 
     # Apply command line argument to argv.
-    argv = argv + ([arg for arg in sys.argv[1:]
-                    if not arg.startswith('--config=')])
+    argv = argv + sys.argv[1:]
 
     # Prepare argument parser.
     parser = argparse.ArgumentParser()
 
     parser.add_argument('--buildtype',
-                        choices=['debug', 'release'],
-                        default='debug')
+        choices=['debug', 'release'], default='debug',
+        help='Specify the build type: %(choices)s (default: %(default)s)')
 
-    parser.add_argument('--builddir', default=path.BUILD_ROOT)
+    parser.add_argument('--builddir', default=path.BUILD_ROOT,
+        help='Specify the build directory (default: %(default)s)')
+    parser.add_argument('--buildlib', action='store_true', default=False,
+        help='Build IoT.js library only (default: %(default)s)')
 
-    parser.add_argument('--clean', action='store_true')
+    parser.add_argument('--clean', action='store_true', default=False,
+        help='Clean build directory before build (default: %(default)s)')
 
-    parser.add_argument('--buildlib', action='store_true')
+    parser.add_argument('--config', default=path.BUILD_CONFIG_PATH,
+        help='Specify the config file (default: %(default)s)',
+        dest='config_path')
 
     parser.add_argument('--target-arch',
-                        choices=['arm', 'x86', 'i686', 'x86_64', 'x64'],
-                        default=platform.arch())
-
+        choices=['arm', 'x86', 'i686', 'x86_64', 'x64'],
+        default=platform.arch(),
+        help='Specify the target architecture: '
+             '%(choices)s (default: %(default)s)')
     parser.add_argument('--target-os',
-                        choices=['linux', 'darwin', 'osx', 'nuttx'],
-                        default=platform.os())
+        choices=['linux', 'darwin', 'osx', 'nuttx', 'tizen', 'tizenrt'],
+        default=platform.os(),
+        help='Specify the target os: %(choices)s (default: %(default)s)')
 
-    parser.add_argument('--target-board', default='')
+    parser.add_argument('--target-board',
+        choices=['none', 'artik10', 'stm32f4dis', 'rpi2', 'artik05x'],
+        default='none', help='Specify the targeted board (if needed): '
+             '%(choices)s (default: %(default)s)')
+    parser.add_argument('--nuttx-home', default=None, dest='sysroot',
+        help='Specify the NuttX base directory (required for NuttX build)')
 
-    parser.add_argument('--cmake-param', action='append')
+    parser.add_argument('--cross-compile', dest='cross_compile',
+        action='store', help='Specify the cross compilation toolkit prefix.')
+    parser.add_argument('--sysroot', action='store',
+        help='The location of the development tree root directory (sysroot).'
+        'Must be compatible with used toolchain.')
 
-    parser.add_argument('--compile-flag', action='append')
+    parser.add_argument('--cmake-param',
+        action='append', default=[],
+        help='Specify additional cmake parameters '
+             '(can be used multiple times)')
+    parser.add_argument('--compile-flag',
+        action='append', default=[],
+        help='Specify additional compile flags (can be used multiple times)')
+    parser.add_argument('--link-flag',
+        action='append', default=[],
+        help='Specify additional linker flags (can be used multiple times)')
 
-    parser.add_argument('--link-flag', action='append')
+    parser.add_argument('--external-include-dir',
+        action='append', default=[],
+        help='Specify additional external include directory '
+             '(can be used multiple times)')
+    parser.add_argument('--external-static-lib',
+        action='append', default=[],
+        help='Specify additional external static library '
+             '(can be used multiple times)')
+    parser.add_argument('--external-shared-lib',
+        action='append', default=[],
+        help='Specify additional external shared library '
+             '(can be used multiple times)')
 
-    parser.add_argument('--external-include-dir', action='append')
+    parser.add_argument('--iotjs-include-module',
+        action='store', default=set(), type=lambda x: set(x.split(',')),
+        help='Specify iotjs modules which should be included '
+             '(format: module_1,module_2,...)')
+    parser.add_argument('--iotjs-exclude-module',
+        action='store', default=set(), type=lambda x: set(x.split(',')),
+        help='Specify iotjs modules which should be excluded '
+             '(format: module_1,module_2,...)')
 
-    parser.add_argument('--external-static-lib', action='append')
+    parser.add_argument('--iotjs-minimal-profile',
+        action='store_true', default=False,
+        help='Build IoT.js with minimal profile')
 
-    parser.add_argument('--external-shared-lib', action='append')
+    parser.add_argument('--jerry-cmake-param',
+        action='append', default=[],
+        help='Specify additional cmake parameters for JerryScript '
+        '(can be used multiple times')
+    parser.add_argument('--jerry-compile-flag',
+        action='append', default=[],
+        help='Specify additional compile flags for JerryScript '
+             '(can be used multiple times')
+    parser.add_argument('--jerry-lto',
+        action='store_true', default=False,
+        help='Build JerryScript with LTO enabled')
 
-    parser.add_argument('--iotjs-include-module', action='store')
+    parser.add_argument('--jerry-heap-section',
+        action='store', default=None,
+        help='Specify the name of the JerryScript heap section')
+    parser.add_argument('--jerry-heaplimit',
+        type=int, default=config['build_option']['jerry-heaplimit'],
+        help='Specify the size of the JerryScript max heap size '
+             '(default: %(default)s)')
 
-    parser.add_argument('--iotjs-exclude-module', action='store')
+    parser.add_argument('--jerry-memstat',
+        action='store_true', default=False,
+        help='Enable JerryScript heap statistics')
 
-    parser.add_argument('--iotjs-minimal-profile', action='store_true')
+    parser.add_argument('--jerry-profile',
+        choices=['es5.1', 'es2015-subset'], default='es5.1',
+        help='Specify the profile for JerryScript: %(choices)s'
+             ' (default: %(default)s)')
+    parser.add_argument('--jerry-debugger',
+        action='store_true', default=False,
+        help='Enable JerryScript-debugger')
+    parser.add_argument('--jerry-debugger-port',
+        type=int, default=5001,
+        help='Specify the port of JerryScript-debugger (default: %(default)s)')
+    parser.add_argument('--no-init-submodule',
+        action='store_true', default=False,
+        help='Disable initialization of git submodules')
+    parser.add_argument('--no-check-valgrind',
+        action='store_true', default=False,
+        help='Disable test execution with valgrind after build')
+    parser.add_argument('--no-check-test',
+        action='store_true', default=False,
+        help='Disable test exection after build')
+    parser.add_argument('--no-parallel-build',
+        action='store_true', default=False,
+        help='Disable parallel build')
+    parser.add_argument('--no-snapshot',
+        action='store_true', default=False,
+        help='Disable snapshot generation for IoT.js')
+    parser.add_argument('-e', '--experimental',
+        action='store_true', default=False,
+        help='Enable to build experimental features')
 
-    parser.add_argument('--jerry-cmake-param', action='append')
+    options = parser.parse_args(argv)
+    options.config = config
 
-    parser.add_argument('--jerry-compile-flag', action='append')
-
-    parser.add_argument('--jerry-link-flag', action='append')
-
-    parser.add_argument('--jerry-lto', action='store_true')
-
-    parser.add_argument('--jerry-heap-section', action='store')
-
-    parser.add_argument('--jerry-heaplimit', type=int)
-
-    parser.add_argument('--jerry-memstat', action='store_true')
-
-    parser.add_argument('--no-init-submodule', action='store_true')
-
-    parser.add_argument('--no-check-valgrind', action='store_true')
-
-    parser.add_argument('--no-check-test', action='store_true')
-
-    parser.add_argument('--no-parallel-build', action='store_true')
-
-    parser.add_argument('--nuttx-home', default='')
-
-    parser.add_argument('--no-snapshot', action='store_true')
-
-    # parse argument.
-    option = parser.parse_args(argv)
-    option.config = config
-
-    return option
-
-
-def adjust_option(option):
-    if option.target_os.lower() == 'nuttx':
-        option.buildlib = True
-        if option.nuttx_home == '':
-            ex.fail('--nuttx-home needed for nuttx target')
-        else:
-            option.nuttx_home = fs.abspath(option.nuttx_home)
-            if not fs.exists(option.nuttx_home):
-                ex.fail('--nuttx-home %s not exists' % option.nuttx_home)
-    if option.target_arch == 'x86':
-        option.target_arch = 'i686'
-    if option.target_arch == 'x64':
-        option.target_arch = 'x86_64'
-    if option.target_board == 'rpi2':
-        option.no_check_valgrind = True
-    if option.cmake_param is None:
-        option.cmake_param = []
-    if option.compile_flag is None:
-        option.compile_flag = []
-    if option.link_flag is None:
-        option.link_flag = []
-    if option.external_include_dir is None:
-        option.external_include_dir = []
-    if option.external_static_lib is None:
-        option.external_static_lib = []
-    if option.external_shared_lib is None:
-        option.external_shared_lib = []
-    if option.iotjs_include_module is None:
-        option.iotjs_include_module = []
-    else:
-        option.iotjs_include_module = option.iotjs_include_module.split(',')
-    if option.iotjs_exclude_module is None:
-        option.iotjs_exclude_module = []
-    else:
-        option.iotjs_exclude_module = option.iotjs_exclude_module.split(',')
-    if option.iotjs_minimal_profile:
-        option.no_check_test = True
-    if option.jerry_cmake_param is None:
-        option.jerry_cmake_param = []
-    if option.jerry_compile_flag is None:
-        option.jerry_compile_flag = []
-    if option.jerry_link_flag is None:
-        option.jerry_link_flag = []
+    return options
 
 
-def print_build_option(option):
+def adjust_options(options):
+    # First fix some option inconsistencies
+    if options.target_os in ['nuttx', 'tizenrt']:
+        options.buildlib = True
+        if not options.sysroot:
+            ex.fail('--sysroot needed for nuttx target')
+
+        options.sysroot = fs.abspath(options.sysroot)
+        if not fs.exists(options.sysroot):
+            ex.fail('Nuttx sysroot %s does not exist' % options.sysroot)
+
+    if options.target_arch == 'x86':
+        options.target_arch = 'i686'
+    if options.target_arch == 'x64':
+        options.target_arch = 'x86_64'
+
+    if options.target_os == 'darwin':
+        options.no_check_valgrind = True
+
+    if options.target_board in ['rpi2', 'artik10', 'artik05x']:
+        options.no_check_valgrind = True
+    elif options.target_board == 'none':
+        options.target_board = None
+
+    if options.iotjs_minimal_profile:
+        options.no_check_test = True
+
+    # Then add calculated options
+    options.host_tuple = '%s-%s' % (platform.arch(), platform.os())
+    options.target_tuple = '%s-%s' % (options.target_arch, options.target_os)
+
+    options.host_build_root = fs.join(path.PROJECT_ROOT,
+                                     options.builddir,
+                                     'host',
+                                     options.host_tuple,
+                                     options.buildtype)
+    options.host_build_bins = fs.join(options.host_build_root, 'bin')
+
+    options.build_root = fs.join(path.PROJECT_ROOT,
+                                 options.builddir,
+                                 options.target_tuple,
+                                 options.buildtype)
+    options.build_bins = fs.join(options.build_root, 'bin')
+    options.build_libs = fs.join(options.build_root, 'lib')
+
+    cmake_path = fs.join(path.PROJECT_ROOT, 'cmake', 'config', '%s.cmake')
+    options.cmake_toolchain_file = cmake_path % options.target_tuple
+    options.host_cmake_toolchain_file = cmake_path % options.host_tuple
+
+    # Specify the file of JerryScript profile
+    options.jerry_profile = fs.join(path.JERRY_PROFILE_ROOT,
+                                    options.jerry_profile + '.profile')
+
+
+def print_build_option(options):
     print('=================================================')
-    option_vars = vars(option)
+    option_vars = vars(options)
     for opt in option_vars:
-        print(' --%s: %s ' % (opt, option_vars[opt]))
+        print(' --%s: %s' % (opt, option_vars[opt]))
     print()
-
-
-def set_global_vars(option):
-    global host_tuple
-    host_tuple = '%s-%s' % (platform.arch(), platform.os())
-
-    global host_build_root
-    host_build_root = fs.join(path.PROJECT_ROOT,
-                              option.builddir,
-                              'host',
-                              host_tuple,
-                              option.buildtype)
-
-    global host_build_bins
-    host_build_bins = fs.join(host_build_root, 'bin')
-
-    global target_tuple
-    target_tuple = '%s-%s' % (option.target_arch, option.target_os)
-
-    global build_root
-    build_root = fs.join(path.PROJECT_ROOT,
-                         option.builddir,
-                         target_tuple,
-                         option.buildtype)
-
-    global build_bins
-    build_bins = fs.join(build_root, 'bin')
-
-    global build_libs
-    build_libs = fs.join(build_root, 'lib')
-
-    global build_jerry_deps
-    build_jerry_deps = fs.join(build_root, 'deps', 'jerry')
-
-    global build_jerry_deps_libs
-    build_jerry_deps_libs = fs.join(build_jerry_deps, "lib")
-
-    global libtuv_output_path
-    libtuv_output_path = fs.join(build_libs, 'libtuv.a')
-
-    global libhttpparser_output_path
-    libhttpparser_output_path = fs.join(build_libs, 'libhttpparser.a')
-
-    global jerry_output_path
-    jerry_output_path = fs.join(host_build_bins, 'jerry')
-
-    global libjerry_output_path
-    libjerry_output_path = fs.join(build_libs, 'libjerrycore.a')
-
-    global iotjs_output_path
-    iotjs_output_path = fs.join(build_bins, 'iotjs')
-
-    global libiotjs_output_path
-    libiotjs_output_path = fs.join(build_libs, 'libiotjs.a')
-
-    global libjerry_libc_output_path
-    libjerry_libc_output_path = fs.join(build_jerry_deps_libs,
-                                        'libjerry-libc.a')
-
-    global libjerry_libm_output_path
-    libjerry_libm_output_path = fs.join(build_jerry_deps_libs,
-                                        'libjerry-libm.a')
-
-    global cmake_toolchain_file
-    cmake_toolchain_file = fs.join(path.PROJECT_ROOT, 'cmake', 'config',
-                                   target_tuple + '.cmake')
-
-    global host_cmake_toolchain_file
-    host_cmake_toolchain_file = fs.join(path.PROJECT_ROOT, 'cmake', 'config',
-                                        host_tuple + '.cmake')
-
-    global platform_descriptor
-    platform_descriptor = '%s-%s' % (option.target_arch, option.target_os)
-
-
-def create_build_directories(option):
-    fs.maybe_make_directory(build_root)
-    fs.maybe_make_directory(build_bins)
-    fs.maybe_make_directory(build_libs)
-    fs.maybe_make_directory(host_build_root)
-    fs.maybe_make_directory(host_build_bins)
 
 
 def print_progress(msg):
@@ -286,453 +276,180 @@ def init_submodule():
     ex.check_run_cmd('git', ['submodule', 'update'])
 
 
-def inflate_cmake_option(cmake_opt, option, for_jerry=False):
+def build_cmake_args(options, for_jerry=False):
+    cmake_args = []
     # compile flags
     compile_flags = []
 
-    config_compile_flags = option.config['compile_flags']
-    compile_flags += config_compile_flags['os'][option.target_os]
-    compile_flags += config_compile_flags['arch'][option.target_arch]
-    compile_flags += config_compile_flags['buildtype'][option.buildtype]
-    if option.target_board:
-        compile_flags += config_compile_flags['board'][option.target_board]
+    config_compile_flags = options.config['compile_flags']
+    compile_flags += config_compile_flags['os'][options.target_os]
+    compile_flags += config_compile_flags['arch'][options.target_arch]
+    compile_flags += config_compile_flags['buildtype'][options.buildtype]
+    if options.target_board:
+        compile_flags += config_compile_flags['board'][options.target_board]
 
-    compile_flags += option.compile_flag
-    compile_flags += option.jerry_compile_flag if for_jerry else []
+    compile_flags += options.compile_flag
+    compile_flags += options.jerry_compile_flag if for_jerry else []
 
-    cmake_opt.append('-DCMAKE_C_FLAGS=' + ' '.join(compile_flags))
+    cmake_args.append("-DCMAKE_C_FLAGS='%s'" % (' '.join(compile_flags)))
 
     # link flags
     link_flags = []
 
-    config_link_flags = option.config['link_flags']
-    link_flags += config_link_flags['os'][option.target_os]
+    config_link_flags = options.config['link_flags']
+    link_flags += config_link_flags['os'][options.target_os]
+    link_flags += options.link_flag
 
-    link_flags += option.link_flag
-    link_flags += option.jerry_link_flag if for_jerry else []
-
-    if option.jerry_lto:
+    if options.jerry_lto:
         link_flags.append('-flto')
 
-    cmake_opt.append('-DCMAKE_EXE_LINKER_FLAGS=' + ' '.join(link_flags))
+    cmake_args.append("-DCMAKE_EXE_LINKER_FLAGS='%s'" % (' '.join(link_flags)))
 
     # external include dir
     include_dirs = []
-    if option.target_os == 'nuttx' and option.nuttx_home:
-        include_dirs.append('%s/include' % option.nuttx_home)
-        if option.target_board == 'stm32f4dis':
-            include_dirs.append('%s/arch/arm/src/stm32' % option.nuttx_home)
-    include_dirs.extend(option.external_include_dir)
-    cmake_opt.append('-DEXTERNAL_INCLUDE_DIR=' + ' '.join(include_dirs))
+    if options.target_os in ['nuttx', 'tizenrt'] and options.sysroot:
+        include_dirs.append('%s/include' % options.sysroot)
+        if options.target_board == 'stm32f4dis':
+            include_dirs.append('%s/arch/arm/src/stm32' % options.sysroot)
 
-    # set target board
-    if option.target_board == 'stm32f4dis':
-        cmake_opt.append('-DCMAKE_TARGET_BOARD=STM32')
+    if options.target_os == 'tizenrt':
+        include_dirs.append('%s/../framework/include/iotbus' % options.sysroot)
 
-def build_tuv(option):
-    # Check if libtuv submodule exists.
-    if not fs.exists(path.TUV_ROOT):
-        ex.fail('libtuv submodule not exists!')
+    include_dirs.extend(options.external_include_dir)
+    cmake_args.append("-DEXTERNAL_INCLUDE_DIR='%s'" % (' '.join(include_dirs)))
 
-    # Move working directory to libtuv build directory.
-    build_home = fs.join(build_root, 'deps', 'libtuv')
-    fs.maybe_make_directory(build_home)
-    fs.chdir(build_home)
-
-    # Set tuv cmake option.
-    cmake_opt = [path.TUV_ROOT]
-    cmake_opt.append('-DCMAKE_TOOLCHAIN_FILE=' +
-                     fs.join(path.TUV_ROOT,
-                             'cmake', 'config',
-                             'config_' + target_tuple + '.cmake'))
-    cmake_opt.append('-DCMAKE_BUILD_TYPE=' + option.buildtype)
-    cmake_opt.append('-DTARGET_PLATFORM=' + target_tuple)
-    cmake_opt.append('-DLIBTUV_CUSTOM_LIB_OUT=' + build_home)
-    cmake_opt.append('-DBUILDTESTER=no')
-    cmake_opt.append('-DBUILDAPIEMULTESTER=no')
-
-    if option.target_os == 'nuttx':
-        cmake_opt.append('-DTARGET_SYSTEMROOT=' + option.nuttx_home)
-
-    if option.target_board:
-        cmake_opt.append('-DTARGET_BOARD=' + option.target_board)
-
-    # inflate cmake option.
-    inflate_cmake_option(cmake_opt, option)
-
-    # Run cmake
-    ex.check_run_cmd('cmake', cmake_opt)
-
-    # Run make
-    make_opt = []
-    if not option.no_parallel_build:
-        make_opt.append('-j')
-
-    ex.check_run_cmd('make', make_opt)
-
-    # libtuv output
-    output = fs.join(build_home, 'libtuv.a')
-    if not fs.exists(output):
-        ex.fail('libtuv build failed - target not produced.')
-
-    # copy output to libs directory
-    fs.maybe_make_directory(build_libs)
-    fs.copy(output, libtuv_output_path)
-
-    return True
+    return cmake_args
 
 
-# Build jerry executable to generate snapshot.
-# Jerry executable must be runnable from build HOST machine.
-def build_jerry(option):
-    # Check if JerryScript submodule exists.
-    if not fs.exists(path.JERRY_ROOT):
-        ex.fail('JerryScript submodule not exists!')
-
-    # Move working directory to JerryScript build directory.
-    build_home = fs.join(host_build_root, 'deps', 'jerry')
-    fs.maybe_make_directory(build_home)
-    fs.chdir(build_home)
-
-    # Set JerryScript cmake option.
-    cmake_opt = [path.JERRY_ROOT]
-
-    cmake_opt.append('-DCMAKE_TOOLCHAIN_FILE=' + host_cmake_toolchain_file)
-
-    if option.buildtype == 'debug':
-        cmake_opt.append('-DCMAKE_BUILD_TYPE=Debug')
-
-    # Turn off LTO for jerry bin to save build time.
-    cmake_opt.append('-DENABLE_LTO=OFF')
-
-    # Turn on snapshot
-    if not option.no_snapshot:
-        cmake_opt.append('-DFEATURE_SNAPSHOT_SAVE=ON')
-
-    # Run cmake.
-    ex.check_run_cmd('cmake', cmake_opt)
-
-    target_jerry = {
-        'target_name': 'jerry',
-        'output_path': fs.join(build_home, 'bin/jerry')
-    }
-
-    # Make option.
+def run_make(options, build_home, *args):
     make_opt = ['-C', build_home]
-    if not option.no_parallel_build:
+    make_opt.extend(args)
+    if not options.no_parallel_build:
         make_opt.append('-j')
 
-    # Run make for a target.
     ex.check_run_cmd('make', make_opt)
 
-    # Check output
-    output = target_jerry['output_path']
-    if not fs.exists(output):
-        print(output)
-        ex.fail('JerryScript build failed - target not produced.')
 
-    # copy
-    fs.copy(output, jerry_output_path)
+def get_on_off(boolean_value):
+    if boolean_value:
+        return 'ON'
 
-    return True
+    return 'OFF'
 
 
-def build_libjerry(option):
-    # Check if JerryScript submodule exists.
-    if not fs.exists(path.JERRY_ROOT):
-        ex.fail('JerryScript submodule not exists!')
+def build_iotjs(options):
+    print_progress('Build IoT.js')
 
-    # Move working directory to JerryScript build directory.
-    build_home = fs.join(build_root, 'deps', 'jerry')
-    fs.maybe_make_directory(build_home)
-    fs.chdir(build_home)
+    # Set JerryScript cmake options.
+    cmake_opt = [
+        '-B%s' % options.build_root,
+        '-H%s' % path.PROJECT_ROOT,
+        "-DCMAKE_TOOLCHAIN_FILE='%s'" % options.cmake_toolchain_file,
+        '-DCMAKE_BUILD_TYPE=%s' % options.buildtype.capitalize(),
+        '-DTARGET_OS=%s' % options.target_os,
+        '-DTARGET_BOARD=%s' % options.target_board,
+        '-DPLATFORM_DESCRIPTOR=%s' % options.target_tuple,
+        '-DENABLE_LTO=%s' % get_on_off(options.jerry_lto), # --jerry-lto
+        '-DENABLE_SNAPSHOT=%s' % get_on_off(not options.no_snapshot),
+        '-DENABLE_MINIMAL=%s' % get_on_off(options.iotjs_minimal_profile),
+        '-DBUILD_LIB_ONLY=%s' % get_on_off(options.buildlib), # --build-lib
+        # --jerry-memstat
+        '-DFEATURE_MEM_STATS=%s' % get_on_off(options.jerry_memstat),
+        # --iotjs-include-module
+        "-DIOTJS_INCLUDE_MODULE='%s'" % ','.join(options.iotjs_include_module),
+        # --iotjs-exclude-module
+        "-DIOTJS_EXCLUDE_MODULE='%s'" % ','.join(options.iotjs_exclude_module),
+        # --jerry-profile
+        "-DFEATURE_PROFILE='%s'" % options.jerry_profile,
+    ]
 
-    # Set JerryScript cmake option.
-    cmake_opt = [path.JERRY_ROOT]
-
-    cmake_opt.append('-DCMAKE_TOOLCHAIN_FILE=' + cmake_toolchain_file)
-
-    if option.buildtype == 'debug':
-        cmake_opt.append('-DCMAKE_BUILD_TYPE=Debug')
-        cmake_opt.append('-DFEATURE_ERROR_MESSAGES=On')
-
-    if option.target_os == 'nuttx':
-        cmake_opt.append('-DEXTERNAL_LIBC_INTERFACE=' +
-                         fs.join(option.nuttx_home, 'include'))
-        if option.target_arch == 'arm':
-            cmake_opt.append('-DEXTERNAL_CMAKE_SYSTEM_PROCESSOR=arm')
-
-    if option.target_os == 'linux':
-        cmake_opt.append('-DJERRY_LIBC=OFF')
-        cmake_opt.append('-DJERRY_LIBM=OFF')
+    if options.target_os in ['nuttx', 'tizenrt']:
+        cmake_opt.append("-DEXTERNAL_LIBC_INTERFACE='%s'" %
+                         fs.join(options.sysroot, 'include'))
+        cmake_opt.append("-DTARGET_SYSTEMROOT='%s'" % options.sysroot)
+        cmake_opt.append("-DEXTERNAL_CMAKE_SYSTEM_PROCESSOR=arm")
 
     # --jerry-heaplimit
-    if option.jerry_heaplimit:
-        cmake_opt.append('-DMEM_HEAP_SIZE_KB=' +
-                         str(option.jerry_heaplimit))
+    if options.jerry_heaplimit:
+        cmake_opt.append('-DMEM_HEAP_SIZE_KB=%d' % options.jerry_heaplimit)
 
     # --jerry-heap-section
-    if option.jerry_heap_section:
-        cmake_opt.append('-DJERRY_HEAP_SECTION_ATTR=' +
-                         str(option.jerry_heap_section))
+    if options.jerry_heap_section:
+        cmake_opt.append("-DJERRY_HEAP_SECTION_ATTR='%s'" %
+                         options.jerry_heap_section)
 
-    # --jerry-lto
-    cmake_opt.append('-DENABLE_LTO=%s' % ('ON' if option.jerry_lto else 'OFF'))
-
-    if option.jerry_memstat:
-        cmake_opt.append('-DFEATURE_MEM_STATS=ON')
-
-    # Turn on snapshot
-    cmake_opt.append('-DFEATURE_SNAPSHOT_SAVE=OFF')
-    if not option.no_snapshot:
-        cmake_opt.append('-DFEATURE_SNAPSHOT_EXEC=ON')
-
-    # --jerry-cmake-param
-    cmake_opt += option.jerry_cmake_param
-
-    # inflate cmake option.
-    inflate_cmake_option(cmake_opt, option, for_jerry=True)
-
-    # Run cmake.
-    ex.check_run_cmd('cmake', cmake_opt)
-
-    # make target - libjerry
-    target_libjerry_name = 'jerry-core'
-    target_libjerry = {
-        'target_name': target_libjerry_name,
-        'output_path': fs.join(build_home, 'lib',
-                               'lib%s.a' % target_libjerry_name),
-        'dest_path': libjerry_output_path
-    }
-
-    targets = []
-    targets.append(target_libjerry)
-
-    # make the target.
-    for target in targets:
-        # Make option.
-        make_opt = ['-C', build_home, target['target_name']]
-        if not option.no_parallel_build:
-            make_opt.append('-j')
-
-        # Run make for a target.
-        ex.check_run_cmd('make', make_opt)
-
-        # Check output
-        output = target['output_path']
-        if not fs.exists(output):
-            print(output)
-            ex.fail('JerryScript build failed - target not produced.')
-
-        # copy
-        fs.copy(output, target['dest_path'])
-
-    return True
-
-
-def build_libhttpparser(option):
-    # Check if JerryScript submodule exists.
-    if not fs.exists(path.HTTPPARSER_ROOT):
-        ex.fail('libhttpparser submodule not exists!')
-        return False
-
-    # Move working directory to JerryScript build directory.
-    build_home = fs.join(build_root, 'deps', 'httpparser')
-    fs.maybe_make_directory(build_home)
-    fs.chdir(build_home)
-
-    # Set JerryScript cmake option.
-    cmake_opt = [path.HTTPPARSER_ROOT]
-
-    cmake_opt.append('-DCMAKE_TOOLCHAIN_FILE=' + cmake_toolchain_file)
-    cmake_opt.append('-DBUILDTYPE=' + option.buildtype.capitalize())
-
-    if option.target_os == 'nuttx':
-        cmake_opt.append('-DNUTTX_HOME=' + option.nuttx_home)
-        cmake_opt.append('-DOS=NUTTX')
-    if option.target_os == 'linux':
-        cmake_opt.append('-DOS=LINUX')
-
-    # inflate cmake option.
-    inflate_cmake_option(cmake_opt, option)
-
-    # Run cmake.
-    ex.check_run_cmd('cmake', cmake_opt)
-
-    # Set make option.
-    make_opt = []
-    if not option.no_parallel_build:
-        make_opt.append('-j')
-
-    # Run make
-    ex.check_run_cmd('make', make_opt)
-
-    # Output
-    output = fs.join(build_home, 'libhttpparser.a')
-    if not fs.exists(output):
-            ex.fail('libhttpparser build failed - target not produced.')
-
-    # copy
-    fs.copy(output, libhttpparser_output_path)
-
-    return True
-
-def analyze_module_dependency(option):
-
-    def print_warn(fmt, arg):
-        print(fmt % arg)
-        ex.fail('Failed to analyze module dependency')
-
-    for name in option.config['module']['always']:
-        if not name in option.iotjs_include_module:
-            option.iotjs_include_module.append(name)
-
-    if not option.iotjs_minimal_profile:
-        for name in option.config['module']['include']:
-            if name in option.config['module']['exclude']:
-                print_warn('Cannot have duplicate module \"%s\" ', name)
-            if not name in option.iotjs_include_module:
-                option.iotjs_include_module.append(name)
-
-    for name in option.iotjs_exclude_module:
-        if name in option.config['module']['always']:
-            print_warn('Cannot exclude always module \"%s\"', name)
-        if name in option.iotjs_include_module:
-            option.iotjs_include_module.remove(name)
-
-    for name in option.config['module']['exclude']:
-        if (not name in option.iotjs_exclude_module and
-            not name in option.iotjs_include_module):
-            option.iotjs_exclude_module.append(name)
-
-    analyze_queue = set()
-    for name in option.iotjs_include_module:
-        analyze_queue.add(name)
-
-    js_modules = { 'iotjs', 'native' }
-    native_modules = { 'process' }
-    while len(analyze_queue) != 0:
-        item = analyze_queue.pop()
-        js_modules.add(item)
-        js_module_path = fs.join(path.PROJECT_ROOT,
-                               'src', 'js', item + '.js')
-        if not fs.exists(js_module_path):
-            print_warn('Cannot read file \"%s\" ', js_module_path)
-        content = open(js_module_path).read()
-
-        re_js_module = 'require\([\'\"](.*)[\'\"]\)'
-        for js_module in re.findall(re_js_module, content):
-            if js_module in option.iotjs_exclude_module:
-                print_warn('Cannot exclude \"%s\" since \"%s\" requires it',
-                           (js_module, item))
-            if js_module not in js_modules:
-                analyze_queue.add(js_module)
-
-        re_native_module = 'process.binding\(process.binding.(.*)\)'
-        for native_module in re.findall(re_native_module, content):
-            native_modules.add(native_module)
-
-    js_modules.remove('native')
-
-    option.js_modules = js_modules
-    option.native_modules = native_modules
-
-    print('Building js modules: %s\nBuilding native modules: %s\n' \
-          % (', '.join(js_modules), ', '.join(native_modules)))
-
-    return True
-
-
-def build_iotjs(option):
-    # Run js2c
-    fs.chdir(path.TOOLS_ROOT)
-    js2c(option.buildtype, option.no_snapshot, option.js_modules,
-         jerry_output_path)
-
-    # Move working directory to IoT.js build directory.
-    build_home = fs.join(build_root, 'iotjs')
-    fs.maybe_make_directory(build_home)
-    fs.chdir(build_home)
-
-    # Set JerryScript cmake option.
-    cmake_opt = [path.PROJECT_ROOT]
-    cmake_opt.append('-DCMAKE_TOOLCHAIN_FILE=' + cmake_toolchain_file)
-    cmake_opt.append('-DCMAKE_BUILD_TYPE=' + option.buildtype.capitalize())
-    cmake_opt.append('-DTARGET_OS=' + option.target_os)
-    cmake_opt.append('-DPLATFORM_DESCRIPT=' + platform_descriptor)
-
-    # IoT.js module list
-    cmake_opt.append('-DIOTJS_MODULES=' + (' ').join(option.native_modules))
-
-    if not option.no_snapshot:
-        option.compile_flag.append('-DENABLE_SNAPSHOT')
-
-    if option.target_os == 'nuttx':
-        cmake_opt.append('-DNUTTX_HOME=' + option.nuttx_home)
-        option.buildlib = True
-
-    # --build-lib
-    if option.buildlib:
-        cmake_opt.append('-DBUILD_TO_LIB=YES')
+    # --jerry-debugger
+    if options.jerry_debugger:
+        cmake_opt.append('-DFEATURE_DEBUGGER=ON')
+        cmake_opt.append('-DFEATURE_DEBUGGER_PORT=%d' %
+                          options.jerry_debugger_port)
 
     # --cmake-param
-    cmake_opt += option.cmake_param
+    cmake_opt.extend(options.cmake_param)
 
-    # --external_static_lib
-    cmake_opt.append('-DEXTERNAL_STATIC_LIB=' +
-                    ' '.join(option.external_static_lib))
+    # --external-static-lib
+    cmake_opt.append("-DEXTERNAL_STATIC_LIB='%s'" %
+                     (' '.join(options.external_static_lib)))
 
-    # --external_shared_lib
-    config_shared_libs = option.config['shared_libs']
-    option.external_shared_lib += config_shared_libs['os'][option.target_os]
-    cmake_opt.append('-DEXTERNAL_SHARED_LIB=' +
-                    ' '.join(option.external_shared_lib))
+    # --external-shared-lib
+    shared_libs = []
+    shared_libs.extend(options.external_shared_lib)
+    shared_libs.extend(options.config['shared_libs']['os'][options.target_os])
+    cmake_opt.append("-DEXTERNAL_SHARED_LIB='%s'" % (' '.join(shared_libs)))
 
-    # inflate cmake option
-    inflate_cmake_option(cmake_opt, option)
+    # --jerry-cmake-param
+    if options.jerry_cmake_param:
+        cmake_opt.append("-DEXTRA_JERRY_CMAKE_PARAMS='%s'" %
+                         ' '.join(options.jerry_cmake_param))
+
+    # --experimental
+    if options.experimental:
+        options.compile_flag.append('-DEXPERIMENTAL')
+
+    # Add common cmake options.
+    cmake_opt.extend(build_cmake_args(options))
 
     # Run cmake.
     ex.check_run_cmd('cmake', cmake_opt)
 
-    # Set make option.
-    make_opt = []
-    if not option.no_parallel_build:
-        make_opt.append('-j')
-
-    # Run make
-    ex.check_run_cmd('make', make_opt)
-
-    # Output
-    output = fs.join(build_home,
-                     'liblibiotjs.a' if option.buildlib else 'iotjs')
-
-    if not fs.exists(output):
-            ex.fail('IoT.js build failed - target not produced.')
-
-    # copy
-    dest_path = libiotjs_output_path if option.buildlib else iotjs_output_path
-    fs.copy(output, dest_path)
-
-    return True
+    run_make(options, options.build_root)
 
 
-def run_checktest(option):
+def process_modules(options):
+    print_progress('Analyze modules')
+
+    includes, excludes = resolve_modules(options)
+    modules = analyze_module_dependency(includes, excludes)
+
+    print('Selected js modules: %s' % ', '.join(modules['js']))
+    print('Selected native modules: %s' % ', '.join(modules['native']))
+
+    options.js_modules = modules['js']
+    options.native_modules = modules['native']
+    options.iotjs_exclude_module = excludes
+
+
+def run_checktest(options):
     checktest_quiet = 'yes'
     if os.getenv('TRAVIS') == "true":
         checktest_quiet = 'no'
 
     # iot.js executable
-    iotjs = fs.join(build_root, 'iotjs', 'iotjs')
-    build_args = ['--', 'quiet='+checktest_quiet]
-    if len(option.iotjs_exclude_module) > 0:
-        skip_module = ','.join(option.iotjs_exclude_module)
-        build_args += ['skip-module='+skip_module]
+    iotjs = fs.join(options.build_root, 'bin', 'iotjs')
+    build_args = ['--', 'quiet=' + checktest_quiet]
+    if options.iotjs_exclude_module:
+        skip_module = ','.join(options.iotjs_exclude_module)
+        build_args.append('skip-module=' + skip_module)
+
+    # experimental
+    if options.experimental:
+        build_args.append('experimental=' + 'yes');
 
     fs.chdir(path.PROJECT_ROOT)
     code = ex.run_cmd(iotjs, [path.CHECKTEST_PATH] + build_args)
     if code != 0:
         ex.fail('Failed to pass unit tests')
-    if not option.no_check_valgrind:
+    if not options.no_check_valgrind:
         code = ex.run_cmd('valgrind', ['--leak-check=full',
                                        '--error-exitcode=5',
                                        '--undef-value-errors=no',
@@ -742,76 +459,38 @@ def run_checktest(option):
             ex.fail('Failed to pass valgrind test')
         if code != 0:
             ex.fail('Failed to pass unit tests in valgrind environment')
-    return True
 
 
-# Initialize build option object.
-option = init_option()
+if __name__ == '__main__':
+    # Initialize build option object.
+    options = init_options()
+    adjust_options(options)
+    print_build_option(options)
 
-adjust_option(option)
+    if options.clean:
+        print_progress('Clear build directory')
+        fs.rmtree(options.build_root)
+        fs.rmtree(options.host_build_root)
 
-print_build_option(option)
+    process_modules(options)
 
-set_global_vars(option)
+    # Perform init-submodule.
+    if not options.no_init_submodule:
+        print_progress('Initialize submodule')
+        init_submodule()
 
-# clean build directory.
-if option.clean:
-    print_progress('Clear build directory')
-    fs.rmtree(build_root)
-    fs.rmtree(host_build_root)
+    build_iotjs(options)
 
-create_build_directories(option)
+    # Run tests
+    if not options.no_check_test:
+        print_progress('Run tests')
+        if options.buildlib:
+            print("Skip unit tests - build target is library\n")
+        elif (options.host_tuple == options.target_tuple or
+              (options.host_tuple == 'x86_64-linux' and
+               options.target_tuple == 'i686-linux')):
+             run_checktest(options)
+        else:
+            print("Skip unit tests - target-host pair is not allowed\n")
 
-# Analyze module dependency
-print_progress('Analyze module dependency')
-if not analyze_module_dependency(option):
-    ex.fail('Failed to analyze module dependency')
-
-# Perform init-submodule.
-print_progress('Initialize submodules')
-if not option.no_init_submodule:
-    init_submodule()
-
-# make build directory.
-print_progress('Create build directory')
-fs.maybe_make_directory(build_root)
-
-# build tuv.
-print_progress('Build libtuv')
-if not build_tuv(option):
-    ex.fail('Failed to build libtuv')
-
-# build jerry.
-print_progress('Build JerryScript')
-if not build_jerry(option):
-    ex.fail('Failed to build jerry')
-if not build_libjerry(option):
-    ex.fail('Failed to build libjerry')
-
-# build httpparser
-print_progress('Build libhttpparser')
-if not build_libhttpparser(option):
-    ex.fail('Failed to build libhttpparser')
-
-# build iotjs.
-print_progress('Build IoT.js')
-if not build_iotjs(option):
-    ex.fail('Failed to build IoT.js')
-
-# check unit test.
-if not option.no_check_test:
-    print_progress('Check unit tests')
-    # Run check test when target is host.
-    if (option.target_os != platform.os() or
-            option.target_arch != platform.arch()):
-        print("Skip unit tests - target is not host\n")
-    elif option.buildlib:
-        print("Skip unit tests - build target is library\n")
-    else:
-        if not run_checktest(option):
-            ex.fail('Failed to pass unit tests')
-
-
-print("\n%sIoT.js Build Succeeded!!%s\n" % (ex._TERM_GREEN, ex._TERM_EMPTY))
-
-sys.exit(0)
+    print("\n%sIoT.js Build Succeeded!!%s\n" % (ex._TERM_GREEN, ex._TERM_EMPTY))

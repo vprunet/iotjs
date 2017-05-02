@@ -14,6 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import print_function
 
 import argparse
 import sys
@@ -25,8 +26,10 @@ from common_py.system.executor import Executor as ex
 from common_py.system.platform import Platform
 from check_tidy import check_tidy
 
-TESTS=['host', 'rpi2', 'nuttx', 'misc'] # TODO: support darwin
+TESTS=['host-linux', 'host-darwin', 'rpi2', 'nuttx', 'misc',
+       'artik10', 'coverity']
 BUILDTYPES=['debug', 'release']
+NUTTXTAG = 'nuttx-7.19'
 
 def get_config():
     config_path = path.BUILD_CONFIG_PATH
@@ -41,6 +44,8 @@ def parse_option():
          epilog='If no arguments are given, runs full test.')
     parser.add_argument('--test', choices=TESTS, action='append')
     parser.add_argument('--buildtype', choices=BUILDTYPES, action='append')
+    parser.add_argument('--buildoptions', action='store', default='',
+                        help='A comma separated list of extra buildoptions')
 
     option = parser.parse_args(sys.argv[1:])
     if option.test is None:
@@ -54,26 +59,26 @@ def setup_nuttx_root(nuttx_root):
     # Step 1
     fs.maybe_make_directory(nuttx_root)
     fs.chdir(nuttx_root)
-    if fs.exists('nuttx'):
-        fs.chdir('nuttx')
-        ex.check_run_cmd('git', ['pull'])
-        fs.chdir('..')
-    else:
+    if not fs.exists('nuttx'):
         ex.check_run_cmd('git', ['clone',
                                  'https://bitbucket.org/nuttx/nuttx.git'])
-    if fs.exists('apps'):
-        fs.chdir('apps')
-        ex.check_run_cmd('git', ['pull'])
-        fs.chdir('..')
-    else:
+    fs.chdir('nuttx')
+    ex.check_run_cmd('git', ['checkout', NUTTXTAG])
+    fs.chdir('..')
+
+    if not fs.exists('apps'):
         ex.check_run_cmd('git', ['clone',
                                  'https://bitbucket.org/nuttx/apps.git'])
+    fs.chdir('apps')
+    ex.check_run_cmd('git', ['checkout', NUTTXTAG])
+    fs.chdir('..')
 
     # Step 2
     fs.maybe_make_directory(fs.join(nuttx_root, 'apps', 'system', 'iotjs'))
     for file in fs.listdir(fs.join(path.PROJECT_ROOT,
-                                   'targets', 'nuttx-stm32f4', 'app')):
-        fs.copy(fs.join(path.PROJECT_ROOT,'targets','nuttx-stm32f4','app',file),
+                                   'config', 'nuttx', 'stm32f4dis','app')):
+        fs.copy(fs.join(path.PROJECT_ROOT, 'config',
+                        'nuttx', 'stm32f4dis', 'app', file),
                 fs.join(nuttx_root, 'apps', 'system', 'iotjs'))
 
     # Step 3
@@ -81,69 +86,104 @@ def setup_nuttx_root(nuttx_root):
     ex.check_run_cmd('./configure.sh', ['stm32f4discovery/usbnsh'])
     fs.chdir('..')
     fs.copy(fs.join(path.PROJECT_ROOT,
-                    'targets',
-                    'nuttx-stm32f4',
+                    'config',
                     'nuttx',
+                    'stm32f4dis',
                     '.config.travis'),
             '.config')
 
 
-def build_nuttx(nuttx_root, buildtype):
+def build_nuttx(nuttx_root, buildtype, maketarget):
     fs.chdir(fs.join(nuttx_root, 'nuttx'))
-    try:
-        code = 0
-        if buildtype == "release":
-            code = ex.run_cmd('make',
-                              ['IOTJS_ROOT_DIR=' + path.PROJECT_ROOT, 'R=1'])
-        else:
-            code = ex.run_cmd('make',
-                              ['IOTJS_ROOT_DIR=' + path.PROJECT_ROOT, 'R=0'])
+    if buildtype == "release":
+        rflag = 'R=1'
+    else:
+        rflag = 'R=0'
+    ex.check_run_cmd('make',
+                     [maketarget, 'IOTJS_ROOT_DIR=' + path.PROJECT_ROOT, rflag])
 
-        if code == 0:
-            return True
-        else:
-            print 'Failed to build nuttx'
-            return False
-    except OSError as err:
-        print 'Failed to build nuttx: %s' % err
-        return False
+
+def setup_tizen_root(tizen_root):
+    if fs.exists(tizen_root):
+        fs.chdir(tizen_root)
+        ex.check_run_cmd('git', ['pull'])
+        fs.chdir(path.PROJECT_ROOT)
+    else:
+        ex.check_run_cmd('git', ['clone',
+            'https://github.com/pmarcinkiew/tizen3.0_rootstrap.git',
+            tizen_root])
 
 
 def build(buildtype, args=[]):
     fs.chdir(path.PROJECT_ROOT)
-    ex.check_run_cmd('./tools/build.py', args + ['--buildtype=' + buildtype])
+    ex.check_run_cmd('./tools/build.py', ['--buildtype=' + buildtype] + args)
+
+
+def get_os_dependency_exclude_module(exclude_module):
+    os_dependency_module = {}
+    all_module = set(exclude_module['all'])
+    for os_name in exclude_module.keys():
+        if not os_name == 'all':
+            os_dependency_module[os_name] = \
+              list(all_module | set(exclude_module[os_name]))
+    return os_dependency_module
 
 
 option = parse_option()
 config = get_config()
-if len(config['module']['exclude']) > 0 :
-    include_module = ','.join(config['module']['exclude'])
-    include_module = ['--iotjs-include-module=' + include_module]
-else:
-    include_module = []
+os_dependency_module = \
+    get_os_dependency_exclude_module(config['module']['exclude'])
+
+# Excluded modules are also included in the build test.
+# Travis will test all implemented modules.
+for os_name in os_dependency_module:
+    if os_dependency_module[os_name]:
+        os_dependency_module[os_name] = \
+        ['--iotjs-include-module=' + ','.join(os_dependency_module[os_name])]
+
+build_args = []
+
+if option.buildoptions:
+    build_args.extend(option.buildoptions.split(','))
 
 for test in option.test:
-    if test == "host":
+    if test == "host-linux":
         for buildtype in option.buildtype:
-            build(buildtype, include_module)
+            build(buildtype, os_dependency_module['linux'] + build_args)
+
+    if test == "host-darwin":
+        for buildtype in option.buildtype:
+            build(buildtype, os_dependency_module['darwin'] + build_args)
 
     elif test == "rpi2":
         for buildtype in option.buildtype:
+            build(buildtype, ['--target-arch=arm', '--target-board=rpi2']
+                              + os_dependency_module['linux'] + build_args)
+
+    elif test == "artik10":
+        for buildtype in option.buildtype:
+            tizen_root = fs.join(path.PROJECT_ROOT, 'deps', 'tizen')
+            setup_tizen_root(tizen_root)
             build(buildtype, ['--target-arch=arm',
-                              '--target-board=rpi2'] + include_module)
+                              '--target-os=tizen',
+                              '--target-board=artik10',
+                              '--compile-flag=--sysroot=' + tizen_root
+                              ] + os_dependency_module['linux'] + build_args)
 
     elif test == "nuttx":
+        current_dir = os.getcwd()
         for buildtype in option.buildtype:
             nuttx_root=fs.join(path.PROJECT_ROOT, 'deps', 'nuttx')
             setup_nuttx_root(nuttx_root)
-            build_nuttx(nuttx_root, buildtype)
+            build_nuttx(nuttx_root, buildtype, 'context')
             build(buildtype, ['--target-arch=arm',
                               '--target-os=nuttx',
                               '--nuttx-home=' + fs.join(nuttx_root, 'nuttx'),
                               '--target-board=stm32f4dis',
-                              '--jerry-heaplimit=78'] + include_module)
-            if not build_nuttx(nuttx_root, buildtype):
-                ex.fail('nuttx ' + buildtype + ' build failed')
+                              '--jerry-heaplimit=78']
+                              + os_dependency_module['nuttx'] + build_args)
+            build_nuttx(nuttx_root, buildtype, 'all')
+            fs.chdir(current_dir)
 
     elif test == "misc":
 
@@ -155,6 +195,11 @@ for test in option.test:
         if not check_tidy(path.PROJECT_ROOT):
             ex.fail("Failed tidy check")
 
-        build("debug")
-        build("debug", ['--no-snapshot', '--jerry-lto'] + include_module)
-        build("debug", ['--iotjs-minimal-profile'])
+        build("debug", build_args)
+        build("debug", ['--no-snapshot', '--jerry-lto']
+                       + os_dependency_module['linux'] + build_args)
+
+        build("debug", ['--iotjs-minimal-profile'] + build_args)
+
+    elif test == "coverity":
+        build("debug", os_dependency_module['linux'] + build_args)

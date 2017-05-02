@@ -2,8 +2,12 @@
 [![Join the chat at https://gitter.im/Samsung/iotjs](https://badges.gitter.im/Join%20Chat.svg)](https://gitter.im/Samsung/iotjs?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge&utm_content=badge)
 [![License](https://img.shields.io/badge/licence-Apache%202.0-brightgreen.svg?style=flat)](LICENSE)
 [![Build Status](https://travis-ci.org/Samsung/iotjs.svg?branch=master)](https://travis-ci.org/Samsung/iotjs)
+[![Coverity Scan Build Status](https://img.shields.io/coverity/scan/12140.svg)](https://scan.coverity.com/projects/samsung-iotjs)
 
 You can find project details on our [project page](http://samsung.github.io/iotjs/) and [wiki](https://github.com/Samsung/iotjs/wiki).
+
+IRC channel: #iotjs on [freenode](https://freenode.net)  
+Mailing list: iotjs-dev@groups.io, you can subscribe [here](https://groups.io/g/iotjs-dev) and access the mailing list archive [here](https://groups.io/g/iotjs-dev/topics).
 
 ## Quick Start
 ### Getting the sources
@@ -26,11 +30,11 @@ build/x86_64-linux/debug/bin/iotjs tools/check_test.js
 ```
 
 
-For Additional information see [Getting Started](docs/Getting-Started.md).
+For Additional information see [Getting Started](docs/help/Getting-Started.md).
 
 ## Documentation
-- [Getting Started](docs/Getting-Started.md)
-- [API Reference](docs/IoT.js-API-reference.md)
+- [Getting Started](docs/help/Getting-Started.md)
+- [API Reference](docs/api/IoT.js-API-reference.md)
 
 ## License
 IoT.js is Open Source software under the [Apache 2.0 license](https://www.apache.org/licenses/LICENSE-2.0). Complete license and copyright information can be found within the code.
@@ -60,4 +64,4 @@ IoT.js is Open Source software under the [Apache 2.0 license](https://www.apache
  IN THE SOFTWARE.
 
 > This license applies to parts of '*.js' files in '/src/js', implementing node.js
- compatible API, originating from the https://github.com/node/node repository:
+ compatible API, originating from the https://github.com/nodejs/node repository:

@@ -51,6 +51,8 @@ dtoverlay=pwm-2chan,pin=18,func=2,pin2=19,func2=2
 
 For more information about overlays, refer to [README](https://github.com/raspberrypi/linux/blob/rpi-4.9.y/arch/arm/boot/dts/overlays/README).
 
+* Note that it is necessary to have root privileges in order to run PWM module.
+
 #### Enable the UART interface
 
 To use UART module, the UART interface must be enabled.
@@ -78,7 +80,7 @@ Reboot your Raspberry Pi.
 Install arm linux cross compiler.
 
 ``` bash
-sudo apt-get install gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf
+sudo apt-get install gcc-arm-linux-gnueabihf
 ```
 
 ##### macOS
@@ -87,20 +89,16 @@ Install arm linux cross compiler via [this site](http://www.welzels.de/blog/en/a
 
 The default location for arm linux compiler toolchain is **"/usr/local/linaro/arm-linux-gnueabihf-raspbian"**.
 
-Then you need to locate c_compiler and cxx_compiler.
+Then you need to locate c_compiler.
 In **"./cmake/config/arm-linux.cmake"**,
 ``` cmake
 SET(EXTERNAL_CMAKE_C_COMPILER
     /usr/local/linaro/arm-linux-gnueabihf-raspbian/bin/arm-linux-gnueabihf-gcc)
-SET(EXTERNAL_CMAKE_CXX_COMPILER
-    /usr/local/linaro/arm-linux-gnueabihf-raspbian/bin/arm-linux-gnueabihf-g++)
 ```
 In **"./deps/libtuv/cmake/config/config_arm-linux.cmake"**,
 ``` cmake
 SET(CMAKE_C_COMPILER
     /usr/local/linaro/arm-linux-gnueabihf-raspbian/bin/arm-linux-gnueabihf-gcc)
-SET(CMAKE_CXX_COMPILER
-    /usr/local/linaro/arm-linux-gnueabihf-raspbian/bin/arm-linux-gnueabihf-g++)
 ```
 
 #### Build IoT.js (Cross compile)

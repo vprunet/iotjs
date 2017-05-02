@@ -15,13 +15,14 @@
 
 var testdriver = require('testdriver');
 var console_wrapper = require('common_js/module/console');
+var builtin_modules =
+  Object.keys(process.native_sources).concat(Object.keys(process.binding));
 
 function Runner(driver) {
   process._exiting = false;
 
   this.driver = driver;
-  this.filename = driver.filename();
-  this.attr = driver.attrs[this.filename] || {};
+  this.test = driver.currentTest();
   this.finished = false;
   if (driver.skipModule) {
     this.skipModule = driver.skipModule;
@@ -70,7 +71,7 @@ Runner.prototype.spin = function() {
 
 Runner.prototype.checkSkipModule = function() {
   for (var i = 0; i < this.skipModuleLength; i++) {
-    if (this.filename.indexOf(this.skipModule[i]) >= 0) {
+    if (this.test['name'].indexOf(this.skipModule[i]) >= 0) {
       return true;
     }
   }
@@ -78,23 +79,57 @@ Runner.prototype.checkSkipModule = function() {
   return false;
 };
 
+Runner.prototype.checkSupportedModule = function() {
+  // Cut off the '.js' ending
+  var name = this.test['name'].slice(0, -3);
+
+  // test_mod_smt -> [test, mod, smt]
+  // test_modsmt -> [test, modsmt]
+  var parts = name.split('_');
+  if (parts[0] != 'test') {
+    // test filename does not start with 'test_' so we'll just
+    // assume we support it.
+    return true;
+  }
+
+  // The second part of the array contains the module
+  // which is under test
+  var tested_module = parts[1];
+  for (var i = 0; i < builtin_modules.length; i++) {
+    if (tested_module == builtin_modules[i]) {
+      return true;
+    }
+  }
+
+  // In any other case we do not support this js file.
+  return false;
+}
 
 Runner.prototype.run = function() {
-  if (this.attr.skip && (this.attr.skip.indexOf('all') >= 0 ||
-      this.attr.skip.indexOf(this.driver.os) >= 0)) {
+  if (!this.checkSupportedModule()) {
+    this.test.reason = 'unsupported module by iotjs build';
+    this.finish('skip');
+    return;
+  }
+
+  var skip = this.test['skip'];
+  if (skip) {
+    if ((skip.indexOf('all') >= 0) || (skip.indexOf(this.driver.os) >= 0)
+      || (skip.indexOf(this.driver.stability) >= 0)) {
       this.finish('skip');
       return;
+    }
   }
 
   if (this.skipModuleLength && this.checkSkipModule()) {
-    this.attr.reason = 'exclude module';
+    this.test.reason = 'exclude module';
     this.finish('skip');
     return;
   }
 
   this.timer = null;
-  if (this.attr.timeout) {
-    var timeout = this.attr.timeout['all'] || this.attr.timeout[this.driver.os];
+  if (this.test['timeout']) {
+    var timeout = this.test['timeout'];
     if (timeout) {
       var that = this;
       this.timer = setTimeout(function () {
@@ -107,9 +142,9 @@ Runner.prototype.run = function() {
     var source = this.driver.test();
     eval(source);
   } catch(e) {
-    if (this.attr.fail) {
+    if (this.test['expected-failure']) {
       this.finish('pass');
-    } else if (this.attr.uncaught) {
+    } else if (this.test['uncaught']) {
       throw e;
     } else {
       console.error(e);
@@ -128,7 +163,7 @@ Runner.prototype.finish = function(status) {
 
   this.finished = true;
 
-  this.driver.emitter.emit('nextTest', this.driver, status, this.attr);
+  this.driver.emitter.emit('nextTest', this.driver, status, this.test);
 };
 
 module.exports.Runner = Runner;

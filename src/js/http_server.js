@@ -115,8 +115,10 @@ ServerResponse.prototype.writeHead = function(statusCode, reason, obj) {
     if (util.isNullOrUndefined(this._headers)) {
       this._headers = {};
     }
-    for (key in Object.keys(obj)) {
-      this._headers[key] = obj[key];
+    for (var key in obj) {
+      if (obj.hasOwnProperty(key)) {
+        this._headers[key] = obj[key];
+      }
     }
   }
 
@@ -187,8 +189,7 @@ function connectionListener(socket) {
   // cf) In Node.js, freelist returns a new parser.
   // parser initialize
   var parser = common.createHTTPParser();
-  // FIXME: This should be impl. with Array
-  parser._headers = {};
+  parser._headers = [];
   parser._url = '';
 
   parser.onIncoming = parserOnIncoming;

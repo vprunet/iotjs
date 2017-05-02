@@ -14,11 +14,21 @@
  */
 
 
-var adc = require('adc');
+var Adc = require('adc');
 var assert = require('assert');
-var stm32fPin = require('pin').STM32F4DIS;
+var adc = new Adc();
+var configuration = {};
 
-var adc0 = new adc(stm32fPin.ADC1_3, function(err) {
+if (process.platform === 'linux') {
+  configuration.device =
+    '/sys/devices/12d10000.adc/iio:device0/in_voltage0_raw';
+} else if (process.platform === 'nuttx') {
+  configuration.pin = require('stm32f4dis').pin.ADC1_3;
+} else {
+  assert.fail();
+}
+
+var adc0 = adc.open(configuration, function(err) {
   console.log('ADC initialized');
 
   if (err) {
@@ -54,14 +64,14 @@ function test1() {
 // read sync test
 function test2() {
   var loopCnt = 5,
-    value = -1;
+      value = -1;
 
   console.log('test2 start(read sync test)');
   var test2Loop = setInterval(function() {
     if (--loopCnt < 0) {
       console.log('test2 complete');
       clearInterval(test2Loop);
-      adc0.unexport();
+      adc0.close();
     } else {
       value = adc0.readSync();
       if (value < 0) {
