@@ -1,4 +1,4 @@
-/* Copyright 2016-present Samsung Electronics Co., Ltd. and other contributors
+/* Copyright 2015-present Samsung Electronics Co., Ltd. and other contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,22 +13,8 @@
  * limitations under the License.
  */
 
- /*
- @STDOUT=Pass
- */
+ var assert = require('assert');
 
-var fs = require('fs');
-var assert = require('assert');
+ var Duplex = require('stream').Duplex;
 
-var file1 = process.cwd() + "/resources/rename.txt";
-var file2 = process.cwd() + "/resources/rename.txt.async";
-
-fs.rename(file1, file2, function(err) {
-  assert.equal(err, null);
-  assert.equal(fs.existsSync(file1), false);
-  assert.equal(fs.existsSync(file2), true);
-  fs.rename(file2, file1, function(err) {
-    assert.equal(err, null);
-    console.log("Pass");
-  });
-});
+ var duplex = Duplex({highWaterMark: 0});
